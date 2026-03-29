@@ -306,11 +306,13 @@ def get_region_by_address(address, accounts_config):
 def should_process_row(row):
     status = str(row.get("狀態", "")).strip()
     order_no = row.get("訂單編號", "")
-    return status == "未安排" or is_blank(order_no)
+    return status == "未安排" and is_blank(order_no)
 
 
 def should_create_order(row):
-    return is_blank(row.get("訂單編號", ""))
+    status = str(row.get("狀態", "")).strip()
+    order_no = row.get("訂單編號", "")
+    return status == "未安排" and is_blank(order_no)
 
 
 # =========================
