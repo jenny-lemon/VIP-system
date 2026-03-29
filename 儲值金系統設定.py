@@ -1,5 +1,6 @@
 import re
 import time
+import streamlit as st
 from datetime import datetime, timedelta
 from collections import defaultdict
 
@@ -315,17 +316,22 @@ def should_create_order(row):
 # =========================
 # Google Sheet
 # =========================
+import streamlit as st
+
 def build_gsheet_client():
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
-    creds = Credentials.from_service_account_file(
-        GOOGLE_SERVICE_ACCOUNT_FILE,
-        scopes=scopes,
-    )
-    return gspread.authorize(creds)
 
+    import streamlit as st
+
+    creds = Credentials.from_service_account_info(
+        st.secrets["GOOGLE_SERVICE_ACCOUNT"],
+        scopes=scopes,
+    )    
+
+    return gspread.authorize(creds)
 
 def load_worksheet(sheet_name):
     client = build_gsheet_client()
@@ -649,10 +655,11 @@ def build_gcal_service():
         return None
 
     scopes = ["https://www.googleapis.com/auth/calendar"]
-    credentials = Credentials.from_service_account_file(
-        GOOGLE_SERVICE_ACCOUNT_FILE,
+    credentials = Credentials.from_service_account_info(
+        st.secrets["GOOGLE_SERVICE_ACCOUNT"],
         scopes=scopes,
     )
+
     return build("calendar", "v3", credentials=credentials)
 
 
