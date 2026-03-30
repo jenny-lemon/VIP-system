@@ -841,6 +841,7 @@ def prepare_base_order_data(
     hours,
     system_period,
     note_info,
+    backend_user_id,
 ):
     member = member_payload.get("member", {}) if isinstance(member_payload, dict) else {}
     last_purchase = member_payload.get("lastPurchase", {}) if isinstance(member_payload, dict) else {}
@@ -906,7 +907,7 @@ def prepare_base_order_data(
         "notice": "",               # 客服備註先留空
         "discount_code": "",
         "payway": "4",
-        "is_backend": "477",
+        "is_backend": str(backend_user_id),
         "member_id": str(member.get("member_id") or ""),
         "company_id": str(address_info.get("company_id") or pick("company_id", "1")),
         "area_id": str(address_info.get("area_id") or pick("area_id", "25")),
@@ -1018,7 +1019,7 @@ def process_existing_order_only(row, gcal_service, region, session):
     return result
 
 
-def process_one_group(session, rows_with_idx, token, gcal_service, region):
+def process_one_group(session, rows_with_idx, token, gcal_service, region, backend_user_id):
     """
     無訂單編號：
     1. 成立訂單
@@ -1087,6 +1088,7 @@ def process_one_group(session, rows_with_idx, token, gcal_service, region):
         hours=hours,
         system_period=system_period,
         note_info=mapped,
+        backend_user_id=backend_user_id,
     )
 
     calc_date = get_date_str(row0["日期"])
@@ -1379,7 +1381,14 @@ def run_process(sheet_name, start_row, end_row, env_name_from_ui=None, backend_e
 
             try:
                 token = get_csrf_token(session)
-                row_results = process_one_group(session, rows_with_idx, token, gcal_service, region)
+                row_results = process_one_group(
+                    session,
+                    rows_with_idx,
+                    token,
+                    gcal_service,
+                    region,
+                    backend_user_id,
+                )
                 all_row_results.update(row_results)
             except Exception as e:
                 print(f"❌ 整組失敗：{e}")
@@ -1419,6 +1428,7 @@ def run_process_web(
     region,
     backend_email,
     backend_password,
+    backend_user_id,
     sheet_name,
     start_row,
     end_row,
