@@ -12,6 +12,7 @@ with st.form("run_form"):
         region = st.selectbox("執行區域", ["台北", "台中"])
         backend_email = st.text_input("後台帳號")
         backend_password = st.text_input("後台密碼", type="password")
+        backend_user_id = st.text_input("後台使用者ID（is_backend）")  # ← 新增
 
     with col2:
         sheet_name = st.text_input("工作表名稱", value="202604")
@@ -29,6 +30,10 @@ if submitted:
         st.error("請輸入後台密碼")
         st.stop()
 
+    if not backend_user_id.strip():
+        st.error("請輸入後台使用者ID")
+        st.stop()
+        
     log_box = st.empty()
     logs = []
 
