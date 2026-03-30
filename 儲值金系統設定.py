@@ -1543,7 +1543,14 @@ def run_process_web(
 
         try:
             token = get_csrf_token(session)
-            row_results = process_one_group(session, rows_with_idx, token, gcal_service, region)
+            row_results = process_one_group(
+                session,
+                rows_with_idx,
+                token,
+                gcal_service,
+                region,
+                backend_user_id,   # ← ⭐一定要加
+            )
             all_row_results.update(row_results)
         except Exception as e:
             logger(f"整組失敗：{e}")
