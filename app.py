@@ -47,6 +47,7 @@ if submitted:
             region=region,
             backend_email=backend_email.strip(),
             backend_password=backend_password.strip(),
+            backend_user_id=backend_user_id.strip(),   # ← ⭐這行一定要加
             sheet_name=sheet_name.strip(),
             start_row=int(start_row),
             end_row=int(end_row),
