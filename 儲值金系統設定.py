@@ -306,7 +306,7 @@ def get_region_by_address(address, accounts_config):
 def should_process_row(row):
     status = str(row.get("狀態", "")).strip()
     order_no = row.get("訂單編號", "")
-    return status == "未安排" and is_blank(order_no)
+    return status == "未安排" or not is_blank(order_no)
 
 
 def should_create_order(row):
@@ -1273,7 +1273,7 @@ def process_one_group(session, rows_with_idx, token, gcal_service, region):
 # =========================
 # 主執行
 # =========================
-def run_process(sheet_name, start_row, end_row, env_name_from_ui=None):
+def run_process(sheet_name, start_row, end_row, env_name_from_ui=None, backend_email=None, backend_password=None):
     print(f"目前環境：{ENV}")
     print(f"BASE_URL：{BASE_URL}")
     print(f"執行工作表：{sheet_name}")
@@ -1333,12 +1333,15 @@ def run_process(sheet_name, start_row, end_row, env_name_from_ui=None):
 
     # 先處理已有訂單編號
     for region, row_list in existing_order_rows.items():
-        config = ACCOUNTS.get(region)
-        if not config:
+        session = requests.Session()
+
+        login_email = backend_email if backend_email else ACCOUNTS.get(region, {}).get("email", "")
+        login_password = backend_password if backend_password else ACCOUNTS.get(region, {}).get("password", "")
+
+        if not login_email or not login_password:
             continue
 
-        session = requests.Session()
-        if not login(session, config["email"], config["password"]):
+        if not login(session, login_email, login_password):
             continue
 
         for row_num, row in row_list:
@@ -1357,12 +1360,11 @@ def run_process(sheet_name, start_row, end_row, env_name_from_ui=None):
         region_groups[region].append((group_key, items))
 
     for region, group_items in region_groups.items():
-        config = ACCOUNTS.get(region)
-        if not config:
-            continue
+        email = backend_email if backend_email else ACCOUNTS.get(region, {}).get("email", "")
+        password = backend_password if backend_password else ACCOUNTS.get(region, {}).get("password", "")
 
-        email = config["email"]
-        password = config["password"]
+        if not email or not password:
+            continue
 
         print(f"\n===== 開始處理區域：{region} ({email}) =====")
 
