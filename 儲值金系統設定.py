@@ -853,14 +853,10 @@ def prepare_base_order_data(
             return last_purchase.get(key)
         return default
 
-    memo_extra = str(row.get("備註", "")).strip() if pd.notna(row.get("備註", "")) else ""
-
-    base_memo = memo_extra if memo_extra else ""
+    # 不要把 B 欄備註帶進客人備註
+    base_memo = ""
     if note_info["need_note"]:
-        if base_memo:
-            base_memo = f"{base_memo}；{note_info['customer_time_note']}"
-        else:
-            base_memo = note_info["customer_time_note"]
+        base_memo = note_info["customer_time_note"]
 
     data = {
         "clean_type_id": clean_type_id,
