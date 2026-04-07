@@ -45,6 +45,43 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ===== 工具函式：解析列號 =====
+def parse_row_input(row_text: str):
+    """
+    支援格式：
+    - 3
+    - 3,5,7
+    - 3,5,7-10
+    - 2-4,8,10-12
+    回傳排序後且去重的 list[int]
+    """
+    if not row_text or not row_text.strip():
+        raise ValueError("請輸入列號，例如：3,5,7-10")
+
+    rows = set()
+    parts = [p.strip() for p in row_text.split(",") if p.strip()]
+
+    for part in parts:
+        if "-" in part:
+            start_str, end_str = part.split("-", 1)
+            start = int(start_str.strip())
+            end = int(end_str.strip())
+
+            if start <= 0 or end <= 0:
+                raise ValueError("列號必須大於 0")
+
+            if start > end:
+                raise ValueError(f"區間格式錯誤：{part}")
+
+            rows.update(range(start, end + 1))
+        else:
+            row = int(part)
+            if row <= 0:
+                raise ValueError("列號必須大於 0")
+            rows.add(row)
+
+    return sorted(rows)
+
 # ===== 標題 =====
 st.markdown('<div class="title">💰 儲值金訂單系統</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle">自動建立訂單 / 發送確認信 / 日曆同步</div>', unsafe_allow_html=True)
@@ -62,17 +99,18 @@ with st.form("run_form"):
         st.markdown("### 🔐 後台登入")
         backend_email = st.text_input("後台帳號")
         backend_password = st.text_input("後台密碼", type="password")
-        backend_user_id = st.text_input("後台使用者ID（is_backend）")
+
+        # 先隱藏後台使用者ID，不顯示在畫面上
+        backend_user_id = ""
 
     with col2:
         st.markdown("### 📊 Sheet 設定")
         sheet_name = st.text_input("工作表名稱", value="202604")
-
-        col_a, col_b = st.columns(2)
-        with col_a:
-            start_row = st.number_input("開始列", min_value=1, value=2)
-        with col_b:
-            end_row = st.number_input("結束列", min_value=1, value=10)
+        row_input = st.text_input(
+            "執行列號",
+            value="2-10",
+            help="可輸入：3,5,7-10"
+        )
 
     submitted = st.form_submit_button("🚀 開始執行")
 
@@ -86,8 +124,11 @@ if submitted:
         st.error("請輸入後台密碼")
         st.stop()
 
-    if not backend_user_id.strip():
-        st.error("請輸入後台使用者ID")
+    try:
+        target_rows = parse_row_input(row_input)
+
+    except Exception as e:
+        st.error(f"列號格式錯誤：{e}")
         st.stop()
 
     st.markdown("### 📡 執行中...")
@@ -96,28 +137,39 @@ if submitted:
     logs = []
 
     def ui_log(msg):
-        logs.append(msg)
+        logs.append(str(msg))
         log_box.code("\n".join(logs[-50:]))
 
+    total_success = 0
+    total_fail = 0
+    total_processed = 0
+
     try:
-        result = run_process_web(
-            env_name=env,
-            region=region,
-            backend_email=backend_email.strip(),
-            backend_password=backend_password.strip(),
-            backend_user_id=backend_user_id.strip(),
-            sheet_name=sheet_name.strip(),
-            start_row=int(start_row),
-            end_row=int(end_row),
-            logger=ui_log,
-        )
+        for row_no in target_rows:
+            ui_log(f"開始處理第 {row_no} 列...")
+
+            result = run_process_web(
+                env_name=env,
+                region=region,
+                backend_email=backend_email.strip(),
+                backend_password=backend_password.strip(),
+                backend_user_id=backend_user_id,  # 先傳空字串
+                sheet_name=sheet_name.strip(),
+                start_row=row_no,
+                end_row=row_no,
+                logger=ui_log,
+            )
+
+            total_success += result.get("success_count", 0)
+            total_fail += result.get("fail_count", 0)
+            total_processed += result.get("total_processed", 0)
 
         st.success("✅ 執行完成")
 
         col1, col2, col3 = st.columns(3)
-        col1.metric("成功", result["success_count"])
-        col2.metric("失敗", result["fail_count"])
-        col3.metric("總數", result["total_processed"])
+        col1.metric("成功", total_success)
+        col2.metric("失敗", total_fail)
+        col3.metric("總數", total_processed)
 
     except Exception as e:
         st.error(f"❌ 執行失敗：{e}")
