@@ -278,7 +278,6 @@ def build_group_key(row):
         str(row["購買項目"]).strip(),
         normalize_period_text(row["開始時間"], row["結束時間"]),
         normalized_human_hour,
-        str(row["備註"]).strip(),
     )
 
 
