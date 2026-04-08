@@ -583,6 +583,14 @@ def validate_available_slots(session, order_data, token, date_slots):
 
     for slot in date_slots:
         raw = get_section_raw(session, order_data, token, slot)
+        
+        # ===== DEBUG 開始 =====
+        import streamlit as st
+        st.write(f"🔍 檢查 slot: `{slot}`")
+        st.write(f"📄 API 回傳內容（前 500 字）：")
+        st.code(raw[:500] if raw else "（空白）")
+        # ===== DEBUG 結束 =====
+        
         if slot_exists_in_section_response(raw, slot):
             valid_slots.append(slot)
         else:
@@ -1580,17 +1588,3 @@ def run_process_web(
         "fail_count": fail_count,
         "total_processed": len(all_row_results),
     }
-def validate_available_slots(session, order_data, token, date_slots):
-    valid_slots = []
-    invalid_slots = []
-
-    for slot in date_slots:
-        raw = get_section_raw(session, order_data, token, slot)
-        print(f"[DEBUG] slot={slot}")          # ← 加這
-        print(f"[DEBUG] raw={raw[:500]}")      # ← 加這
-        if slot_exists_in_section_response(raw, slot):
-            valid_slots.append(slot)
-        else:
-            invalid_slots.append(slot)
-
-    return valid_slots, invalid_slots
