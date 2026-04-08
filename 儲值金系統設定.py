@@ -573,9 +573,15 @@ def slot_exists_in_section_response(raw_text, date_slot):
 
     date_part, period_part = date_slot.split("_", 1)
     normalized = re.sub(r"\s+", "", raw_text)
-    pattern = re.escape(date_part) + r".*?" + re.escape(period_part)
-    return re.search(pattern, normalized) is not None
+    date_part2 = date_part.replace("-", "/")
 
+    return (
+        date_part in normalized or date_part2 in normalized
+    ) and (
+        period_part in normalized
+        or period_part.replace("-", "~") in normalized
+        or period_part.replace("-", " - ") in raw_text
+    )
 
 def validate_available_slots(session, order_data, token, date_slots):
     valid_slots = []
