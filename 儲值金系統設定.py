@@ -1,5 +1,6 @@
 import re
 import time
+import json
 import streamlit as st
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -586,23 +587,39 @@ def slot_exists_in_section_response(raw_text, date_slot):
 
     return False
 
+
 def validate_available_slots(session, order_data, token, date_slots):
     valid_slots = []
     invalid_slots = []
 
     for slot in date_slots:
         raw = get_section_raw(session, order_data, token, slot)
-        
-        # ===== DEBUG 開始 =====
-        import streamlit as st
-        st.write(f"🔍 檢查 slot: `{slot}`")
-        st.write(f"📄 API 回傳內容（前 500 字）：")
-        st.code(raw[:500] if raw else "（空白）")
-        # ===== DEBUG 結束 =====
-        
-        if slot_exists_in_section_response(raw, slot):
-            valid_slots.append(slot)
-        else:
+
+        st.write(f"🔍 檢查 slot: {slot}")
+
+        try:
+            data = json.loads(raw)
+
+            available_slots = [
+                f"{item.get('date')}_{item.get('section')}"
+                for item in data
+                if item.get("date") and item.get("section")
+            ]
+
+            st.write("✅ API 可排時段：")
+            st.code("\n".join(available_slots) if available_slots else "（空白）")
+
+            if slot in available_slots:
+                st.success(f"✅ 命中 slot：{slot}")
+                valid_slots.append(slot)
+            else:
+                st.warning(f"❌ 查無此 slot：{slot}")
+                invalid_slots.append(slot)
+
+        except Exception as e:
+            st.error("❌ API 回傳不是合法 JSON")
+            st.code(raw if raw else "（空白）")
+            st.write(f"錯誤：{e}")
             invalid_slots.append(slot)
 
     return valid_slots, invalid_slots
@@ -1049,6 +1066,10 @@ def process_one_group(session, rows_with_idx, token, gcal_service, region, backe
     original_period = normalize_period_text(row0["開始時間"], row0["結束時間"])
     mapped = map_to_system_slot(row0["開始時間"], row0["結束時間"])
     system_period = mapped["system_slot"]
+
+    st.write(f"🕒 原始時段：{original_period}")
+    st.write(f"🕒 系統查詢時段：{system_period}")
+
     system_display_period = display_period_text(
         system_period.split("-")[0],
         system_period.split("-")[1],
