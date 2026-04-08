@@ -1112,44 +1112,44 @@ def process_one_group(session, rows_with_idx, token, gcal_service, region, backe
     if addr_check and isinstance(addr_check.get("purchase"), dict):
         best_addr["purchase"] = addr_check["purchase"]
 
-    base_data = prepare_base_order_data(
-    row=row0,
-    member_payload=member_payload,
-    address_info=best_addr,
-    clean_type_id=clean_type_id,
-    people=people,
-    hours=hours,
-    system_period=system_period,
-    note_info=mapped,
-    backend_user_id=backend_user_id,
-)
+        base_data = prepare_base_order_data(
+            row=row0,
+            member_payload=member_payload,
+            address_info=best_addr,
+            clean_type_id=clean_type_id,
+            people=people,
+            hours=hours,
+            system_period=system_period,
+            note_info=mapped,
+            backend_user_id=backend_user_id,
+        )
 
-calc_date = get_date_str(row0["日期"])
-calc_data = base_data.copy()
-calc_data["date_s"] = calc_date
+        calc_date = get_date_str(row0["日期"])
+        calc_data = base_data.copy()
+        calc_data["date_s"] = calc_date
 
-calc_result = calculate_hour(session, calc_data, token)
-if not calc_result:
-    raise Exception("計算時數失敗")
+        calc_result = calculate_hour(session, calc_data, token)
+        if not calc_result:
+            raise Exception("計算時數失敗")
 
-st.write("calculate_hour 回傳：")
-st.json(calc_result)
+        st.write("calculate_hour 回傳：")
+        st.json(calc_result)
 
-# 把 calculate_hour 回傳的欄位補回查班表 payload
-for key in ["hour", "person", "price", "price_vvip", "fare", "period_s", "period"]:
-    if key in calc_result and calc_result.get(key) not in (None, ""):
-        base_data[key] = str(calc_result[key])
+        # 把 calculate_hour 回傳的欄位補回查班表 payload
+        for key in ["hour", "person", "price", "price_vvip", "fare", "period_s", "period"]:
+            if key in calc_result and calc_result.get(key) not in (None, ""):
+                base_data[key] = str(calc_result[key])
 
-# 確保 date_s 也帶入後續查班表資料
-base_data["date_s"] = calc_date
+        # 確保 date_s 也帶入後續查班表資料
+        base_data["date_s"] = calc_date
 
-# 若 calculate_hour 有把 period_s 改掉，system_period 也同步更新
-system_period = base_data.get("period_s", system_period)
+        # 若 calculate_hour 有把 period_s 改掉，system_period 也同步更新
+        system_period = base_data.get("period_s", system_period)
 
-system_display_period = display_period_text(
-    system_period.split("-")[0],
-    system_period.split("-")[1],
-)
+        system_display_period = display_period_text(
+            system_period.split("-")[0],
+            system_period.split("-")[1],
+        )
 
     row_details = []
     for row_num, row in rows_with_idx:
