@@ -924,6 +924,7 @@ def prepare_base_order_data(
         "cabinet": str(pick("cabinet", "0")),
         "quintuple": str(pick("quintuple", "0")),
         "hour": str(int(float(hours))),
+        "originHour": str(int(float(hours))),
         "price": "0",
         "price_vvip": "0",
         "person": str(int(people)),
