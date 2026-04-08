@@ -100,8 +100,6 @@ with st.form("run_form"):
         backend_email = st.text_input("後台帳號")
         backend_password = st.text_input("後台密碼", type="password")
 
-        # 先隱藏後台使用者ID，不顯示在畫面上
-        backend_user_id = ""
 
     with col2:
         st.markdown("### 📊 Sheet 設定")
@@ -153,7 +151,6 @@ if submitted:
                 region=region,
                 backend_email=backend_email.strip(),
                 backend_password=backend_password.strip(),
-                backend_user_id=backend_user_id,  # 先傳空字串
                 sheet_name=sheet_name.strip(),
                 start_row=row_no,
                 end_row=row_no,
