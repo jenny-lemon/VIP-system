@@ -567,21 +567,24 @@ def get_section_raw(session, order_data, token, date_slot):
     return resp.text
 
 
+import json
+
 def slot_exists_in_section_response(raw_text, date_slot):
     if not raw_text:
         return False
 
     date_part, period_part = date_slot.split("_", 1)
-    normalized = re.sub(r"\s+", "", raw_text)
-    date_part2 = date_part.replace("-", "/")
 
-    return (
-        date_part in normalized or date_part2 in normalized
-    ) and (
-        period_part in normalized
-        or period_part.replace("-", "~") in normalized
-        or period_part.replace("-", " - ") in raw_text
-    )
+    try:
+        data = json.loads(raw_text)
+    except Exception:
+        return False
+
+    for item in data:
+        if item.get("date") == date_part and item.get("section") == period_part:
+            return True
+
+    return False
 
 def validate_available_slots(session, order_data, token, date_slots):
     valid_slots = []
