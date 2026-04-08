@@ -1,6 +1,5 @@
 import re
 import time
-import json
 import streamlit as st
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -279,6 +278,7 @@ def build_group_key(row):
         str(row["購買項目"]).strip(),
         normalize_period_text(row["開始時間"], row["結束時間"]),
         normalized_human_hour,
+        str(row["備註"]).strip(),
     )
 
 
@@ -302,11 +302,10 @@ def get_region_by_address(address, accounts_config):
                 return region
     return None
 
-
 def should_process_row(row):
     status = str(row.get("狀態", "")).strip()
     order_no = row.get("訂單編號", "")
-    return status == "未安排" or not is_blank(order_no)
+    return status == "未安排" and is_blank(order_no)
 
 
 def should_create_order(row):
@@ -328,11 +327,18 @@ def build_gsheet_client():
 
     import streamlit as st
 
-    creds = Credentials.from_service_account_info(
-        st.secrets["GOOGLE_SERVICE_ACCOUNT"],
-        scopes=scopes,
-    )    
+def build_gsheet_client():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
 
+    creds = Credentials.from_service_account_file(
+        GOOGLE_SERVICE_ACCOUNT_FILE,
+        scopes=scopes,
+    )
+
+    return gspread.authorize(creds)
     return gspread.authorize(creds)
 
 def load_worksheet(sheet_name):
@@ -568,24 +574,14 @@ def get_section_raw(session, order_data, token, date_slot):
     return resp.text
 
 
-import json
-
 def slot_exists_in_section_response(raw_text, date_slot):
     if not raw_text:
         return False
 
     date_part, period_part = date_slot.split("_", 1)
-
-    try:
-        data = json.loads(raw_text)
-    except Exception:
-        return False
-
-    for item in data:
-        if item.get("date") == date_part and item.get("section") == period_part:
-            return True
-
-    return False
+    normalized = re.sub(r"\s+", "", raw_text)
+    pattern = re.escape(date_part) + r".*?" + re.escape(period_part)
+    return re.search(pattern, normalized) is not None
 
 
 def validate_available_slots(session, order_data, token, date_slots):
@@ -594,32 +590,9 @@ def validate_available_slots(session, order_data, token, date_slots):
 
     for slot in date_slots:
         raw = get_section_raw(session, order_data, token, slot)
-
-        st.write(f"🔍 檢查 slot: {slot}")
-
-        try:
-            data = json.loads(raw)
-
-            available_slots = [
-                f"{item.get('date')}_{item.get('section')}"
-                for item in data
-                if item.get("date") and item.get("section")
-            ]
-
-            st.write("✅ API 可排時段：")
-            st.code("\n".join(available_slots) if available_slots else "（空白）")
-
-            if slot in available_slots:
-                st.success(f"✅ 命中 slot：{slot}")
-                valid_slots.append(slot)
-            else:
-                st.warning(f"❌ 查無此 slot：{slot}")
-                invalid_slots.append(slot)
-
-        except Exception as e:
-            st.error("❌ API 回傳不是合法 JSON")
-            st.code(raw if raw else "（空白）")
-            st.write(f"錯誤：{e}")
+        if slot_exists_in_section_response(raw, slot):
+            valid_slots.append(slot)
+        else:
             invalid_slots.append(slot)
 
     return valid_slots, invalid_slots
@@ -690,11 +663,18 @@ def build_gcal_service():
         return None
 
     scopes = ["https://www.googleapis.com/auth/calendar"]
-    credentials = Credentials.from_service_account_info(
-        st.secrets["GOOGLE_SERVICE_ACCOUNT"],
+def build_gcal_service():
+    if not ENABLE_GCAL_COLOR_SYNC:
+        return None
+
+    scopes = ["https://www.googleapis.com/auth/calendar"]
+
+    credentials = Credentials.from_service_account_file(
+        GOOGLE_SERVICE_ACCOUNT_FILE,
         scopes=scopes,
     )
 
+    return build("calendar", "v3", credentials=credentials)
     return build("calendar", "v3", credentials=credentials)
 
 
@@ -874,7 +854,6 @@ def prepare_base_order_data(
     hours,
     system_period,
     note_info,
-    backend_user_id,
 ):
     member = member_payload.get("member", {}) if isinstance(member_payload, dict) else {}
     last_purchase = member_payload.get("lastPurchase", {}) if isinstance(member_payload, dict) else {}
@@ -887,10 +866,14 @@ def prepare_base_order_data(
             return last_purchase.get(key)
         return default
 
-    # 不要把 B 欄備註帶進客人備註
+    # 👉 完全忽略 B欄備註
     base_memo = ""
+  
     if note_info["need_note"]:
-        base_memo = note_info["customer_time_note"]
+        if base_memo:
+            base_memo = f"{base_memo}；{note_info['customer_time_note']}"
+        else:
+            base_memo = note_info["customer_time_note"]
 
     data = {
         "clean_type_id": clean_type_id,
@@ -924,7 +907,6 @@ def prepare_base_order_data(
         "cabinet": str(pick("cabinet", "0")),
         "quintuple": str(pick("quintuple", "0")),
         "hour": str(int(float(hours))),
-        "originHour": str(int(float(hours))),
         "price": "0",
         "price_vvip": "0",
         "person": str(int(people)),
@@ -937,7 +919,7 @@ def prepare_base_order_data(
         "notice": "",               # 客服備註先留空
         "discount_code": "",
         "payway": "4",
-        "is_backend": str(backend_user_id),
+        "is_backend": "477",
         "member_id": str(member.get("member_id") or ""),
         "company_id": str(address_info.get("company_id") or pick("company_id", "1")),
         "area_id": str(address_info.get("area_id") or pick("area_id", "25")),
@@ -1011,14 +993,17 @@ def stage_update_status(order_no, calendar_info):
         return {"狀態": "已安排"}
     return {}
 
+def has_action(selected_actions, action_name):
+    if not selected_actions:
+        return True
+    return action_name in selected_actions
 
-def process_existing_order_only(row, gcal_service, region, session):
+
+def process_existing_order_only(row, gcal_service, region, session, selected_actions=None):
     """
     已有訂單編號：
     - 不重建訂單
-    - 補發確認信
-    - 補改日曆顏色
-    - 若日曆最終成功變香蕉黃 -> 狀態改已安排
+    - 可依 selected_actions 補發確認信 / 補改日曆顏色
     """
     order_no = str(row.get("訂單編號", "")).strip()
 
@@ -1035,27 +1020,46 @@ def process_existing_order_only(row, gcal_service, region, session):
     }
 
     if not order_no:
+        result["結果"] = "失敗"
+        result["原因"] = "無訂單編號"
         return result
 
-    mail_info = stage_send_confirmation(order_no, session)
-    result.update(mail_info)
+    did_anything = False
 
-    calendar_info = stage_calendar_color(row, gcal_service, region)
-    result.update(calendar_info)
+    if has_action(selected_actions, "寄確認信"):
+        mail_info = stage_send_confirmation(order_no, session)
+        result.update(mail_info)
+        did_anything = True
 
-    status_info = stage_update_status(order_no, calendar_info)
-    result.update(status_info)
+    if has_action(selected_actions, "改 Google 日曆"):
+        calendar_info = stage_calendar_color(row, gcal_service, region)
+        result.update(calendar_info)
+        did_anything = True
+
+        status_info = stage_update_status(order_no, calendar_info)
+        result.update(status_info)
+
+    if did_anything:
+        result["結果"] = "成功"
 
     return result
 
 
-def process_one_group(session, rows_with_idx, token, gcal_service, region, backend_user_id):
+def process_one_group(
+    session,
+    rows_with_idx,
+    token,
+    gcal_service,
+    region,
+    backend_user_id=None,
+    selected_actions=None,
+):
     """
     無訂單編號：
-    1. 成立訂單
-    2. 發送確認信
-    3. 日曆改色
-    4. 狀態改為已安排
+    1. 可成立訂單
+    2. 可發送確認信
+    3. 可日曆改色
+    4. 可狀態改為已安排
     """
     row_num0, row0 = rows_with_idx[0]
 
@@ -1067,9 +1071,6 @@ def process_one_group(session, rows_with_idx, token, gcal_service, region, backe
     original_period = normalize_period_text(row0["開始時間"], row0["結束時間"])
     mapped = map_to_system_slot(row0["開始時間"], row0["結束時間"])
     system_period = mapped["system_slot"]
-
-    st.write(f"🕒 原始時段：{original_period}")
-    st.write(f"🕒 系統查詢時段：{system_period}")
 
     system_display_period = display_period_text(
         system_period.split("-")[0],
@@ -1113,44 +1114,24 @@ def process_one_group(session, rows_with_idx, token, gcal_service, region, backe
     if addr_check and isinstance(addr_check.get("purchase"), dict):
         best_addr["purchase"] = addr_check["purchase"]
 
-        base_data = prepare_base_order_data(
-            row=row0,
-            member_payload=member_payload,
-            address_info=best_addr,
-            clean_type_id=clean_type_id,
-            people=people,
-            hours=hours,
-            system_period=system_period,
-            note_info=mapped,
-            backend_user_id=backend_user_id,
-        )
+    base_data = prepare_base_order_data(
+        row=row0,
+        member_payload=member_payload,
+        address_info=best_addr,
+        clean_type_id=clean_type_id,
+        people=people,
+        hours=hours,
+        system_period=system_period,
+        note_info=mapped,
+    )
 
-        calc_date = get_date_str(row0["日期"])
-        calc_data = base_data.copy()
-        calc_data["date_s"] = calc_date
+    calc_date = get_date_str(row0["日期"])
+    calc_data = base_data.copy()
+    calc_data["date_s"] = calc_date
 
-        calc_result = calculate_hour(session, calc_data, token)
-        if not calc_result:
-            raise Exception("計算時數失敗")
-
-        st.write("calculate_hour 回傳：")
-        st.json(calc_result)
-
-        # 把 calculate_hour 回傳的欄位補回查班表 payload
-        for key in ["hour", "person", "price", "price_vvip", "fare", "period_s", "period"]:
-            if key in calc_result and calc_result.get(key) not in (None, ""):
-                base_data[key] = str(calc_result[key])
-
-        # 確保 date_s 也帶入後續查班表資料
-        base_data["date_s"] = calc_date
-
-        # 若 calculate_hour 有把 period_s 改掉，system_period 也同步更新
-        system_period = base_data.get("period_s", system_period)
-
-        system_display_period = display_period_text(
-            system_period.split("-")[0],
-            system_period.split("-")[1],
-        )
+    calc_result = calculate_hour(session, calc_data, token)
+    if not calc_result:
+        raise Exception("計算時數失敗")
 
     row_details = []
     for row_num, row in rows_with_idx:
@@ -1167,7 +1148,48 @@ def process_one_group(session, rows_with_idx, token, gcal_service, region, backe
             "row": row,
         })
 
-    # 班表驗證
+    # 若有建單，才需要驗班表與儲值金
+    need_create_order = has_action(selected_actions, "建單")
+
+    row_results = {}
+
+    if not need_create_order:
+        for detail in row_details:
+            existing_order_no = str(detail["row"].get("訂單編號", "")).strip()
+
+            stage_result = {
+                "訂單編號": existing_order_no,
+                "結果": "成功" if existing_order_no else "失敗",
+                "原因": "" if existing_order_no else "無訂單編號，無法寄信或改日曆",
+                "沒班表日期": "",
+                "餘額不足未送": "",
+                "簡訊實際服務時間": base_data.get("period", ""),
+                "客人備註": base_data.get("memo", ""),
+                "確認信": "",
+                "日曆改色結果": "",
+                "日曆改色原因": "",
+                "日曆原色": "",
+                "日曆新色": "",
+            }
+
+            if existing_order_no and has_action(selected_actions, "寄確認信"):
+                mail_info = stage_send_confirmation(existing_order_no, session)
+                stage_result.update(mail_info)
+
+            if has_action(selected_actions, "改 Google 日曆"):
+                calendar_info = stage_calendar_color(detail["row"], gcal_service, region)
+                stage_result.update(calendar_info)
+
+                if existing_order_no:
+                    status_info = stage_update_status(existing_order_no, calendar_info)
+                    stage_result.update(status_info)
+
+            row_results[detail["row_num"]] = stage_result
+
+        return row_results
+
+    # ===== 以下是需要建單時才執行 =====
+
     raw_slots = [x["slot"] for x in row_details]
     valid_slots, invalid_slots = validate_available_slots(session, base_data, token, raw_slots)
 
@@ -1178,8 +1200,6 @@ def process_one_group(session, rows_with_idx, token, gcal_service, region, backe
             valid_details.append(detail)
         else:
             no_slot_dates.append(detail["date"])
-
-    row_results = {}
 
     if not valid_details:
         for detail in row_details:
@@ -1199,10 +1219,13 @@ def process_one_group(session, rows_with_idx, token, gcal_service, region, backe
             }
         return row_results
 
-    # 儲值金篩選
     valid_slots_for_balance = [x["slot"] for x in valid_details]
     valid_prices_for_balance = [x["price"] for x in valid_details]
-    send_slots, send_prices, _ = filter_dates_by_balance(valid_slots_for_balance, valid_prices_for_balance, stored_value)
+    send_slots, send_prices, _ = filter_dates_by_balance(
+        valid_slots_for_balance,
+        valid_prices_for_balance,
+        stored_value,
+    )
 
     insufficient_dates = []
     send_details = []
@@ -1247,7 +1270,6 @@ def process_one_group(session, rows_with_idx, token, gcal_service, region, backe
     if not send_details:
         return row_results
 
-    # 同價位一批送
     batches = defaultdict(list)
     for detail in send_details:
         batches[detail["price"]].append(detail)
@@ -1260,7 +1282,6 @@ def process_one_group(session, rows_with_idx, token, gcal_service, region, backe
 
         slots = [d["slot"] for d in details]
 
-        # 階段1：成立訂單
         session.post(
             BOOKING_URL,
             data={**payload, "_token": token, "date_list[]": slots},
@@ -1309,17 +1330,16 @@ def process_one_group(session, rows_with_idx, token, gcal_service, region, backe
                 "日曆新色": "",
             }
 
-            # 階段2：發確認信
-            mail_info = stage_send_confirmation(order_no, session)
-            stage_result.update(mail_info)
+            if has_action(selected_actions, "寄確認信"):
+                mail_info = stage_send_confirmation(order_no, session)
+                stage_result.update(mail_info)
 
-            # 階段3：日曆改色
-            calendar_info = stage_calendar_color(detail["row"], gcal_service, region)
-            stage_result.update(calendar_info)
+            if has_action(selected_actions, "改 Google 日曆"):
+                calendar_info = stage_calendar_color(detail["row"], gcal_service, region)
+                stage_result.update(calendar_info)
 
-            # 階段4：狀態改已安排
-            status_info = stage_update_status(order_no, calendar_info)
-            stage_result.update(status_info)
+                status_info = stage_update_status(order_no, calendar_info)
+                stage_result.update(status_info)
 
             row_results[detail["row_num"]] = stage_result
 
@@ -1329,7 +1349,7 @@ def process_one_group(session, rows_with_idx, token, gcal_service, region, backe
 # =========================
 # 主執行
 # =========================
-def run_process(sheet_name, start_row, end_row, env_name_from_ui=None, backend_email=None, backend_password=None):
+def run_process(sheet_name, start_row, end_row, env_name_from_ui=None):
     print(f"目前環境：{ENV}")
     print(f"BASE_URL：{BASE_URL}")
     print(f"執行工作表：{sheet_name}")
@@ -1371,7 +1391,6 @@ def run_process(sheet_name, start_row, end_row, env_name_from_ui=None, backend_e
             gcal_service = None
 
     grouped_orders = defaultdict(list)
-    existing_order_rows = defaultdict(list)
 
     for _, row in df.iterrows():
         region = get_region_by_address(str(row["地址"]), ACCOUNTS)
@@ -1379,7 +1398,6 @@ def run_process(sheet_name, start_row, end_row, env_name_from_ui=None, backend_e
             continue
 
         if not should_create_order(row):
-            existing_order_rows[region].append((int(row["__sheet_row__"]), row))
             continue
 
         key = (region, build_group_key(row))
@@ -1387,40 +1405,17 @@ def run_process(sheet_name, start_row, end_row, env_name_from_ui=None, backend_e
 
     all_row_results = {}
 
-    # 先處理已有訂單編號
-    for region, row_list in existing_order_rows.items():
-        session = requests.Session()
-
-        login_email = backend_email if backend_email else ACCOUNTS.get(region, {}).get("email", "")
-        login_password = backend_password if backend_password else ACCOUNTS.get(region, {}).get("password", "")
-
-        if not login_email or not login_password:
-            continue
-
-        if not login(session, login_email, login_password):
-            continue
-
-        for row_num, row in row_list:
-            try:
-                result = process_existing_order_only(row, gcal_service, region, session)
-                all_row_results[row_num] = result
-            except Exception as e:
-                all_row_results[row_num] = {
-                    "結果": "失敗",
-                    "原因": f"補處理失敗: {e}",
-                }
-
-    # 再處理需建單的
     region_groups = defaultdict(list)
     for (region, group_key), items in grouped_orders.items():
         region_groups[region].append((group_key, items))
 
     for region, group_items in region_groups.items():
-        email = backend_email if backend_email else ACCOUNTS.get(region, {}).get("email", "")
-        password = backend_password if backend_password else ACCOUNTS.get(region, {}).get("password", "")
-
-        if not email or not password:
+        config = ACCOUNTS.get(region)
+        if not config:
             continue
+
+        email = config["email"]
+        password = config["password"]
 
         print(f"\n===== 開始處理區域：{region} ({email}) =====")
 
@@ -1436,12 +1431,13 @@ def run_process(sheet_name, start_row, end_row, env_name_from_ui=None, backend_e
             try:
                 token = get_csrf_token(session)
                 row_results = process_one_group(
-                    session,
-                    rows_with_idx,
-                    token,
-                    gcal_service,
-                    region,
-                    backend_user_id,
+                    session=session,
+                    rows_with_idx=rows_with_idx,
+                    token=token,
+                    gcal_service=gcal_service,
+                    region=region,
+                    backend_user_id=None,
+                    selected_actions=["建單", "寄確認信", "改 Google 日曆"],
                 )
                 all_row_results.update(row_results)
             except Exception as e:
@@ -1465,6 +1461,7 @@ def run_process(sheet_name, start_row, end_row, env_name_from_ui=None, backend_e
     update_sheet_rows(ws, all_row_results)
     print("已回填 Google Sheet。")
 
+
 def get_runtime_config(env_name: str):
     if env_name == "dev":
         return {
@@ -1482,10 +1479,10 @@ def run_process_web(
     region,
     backend_email,
     backend_password,
-    backend_user_id,
     sheet_name,
     start_row,
     end_row,
+    selected_actions=None,
     logger=print,
 ):
     global BASE_URL, ORDER_PREFIX
@@ -1513,6 +1510,9 @@ def run_process_web(
     logger(f"執行區域：{region}")
     logger(f"執行工作表：{sheet_name}")
     logger(f"執行列範圍：{start_row} ~ {end_row}")
+
+    if selected_actions is None:
+        selected_actions = ["建單", "寄確認信", "改 Google 日曆"]
 
     ws, df = load_worksheet(sheet_name)
 
@@ -1572,18 +1572,30 @@ def run_process_web(
     existing_order_rows = []
 
     for _, row in df.iterrows():
+        row_num = int(row["__sheet_row__"])
+
+        if not has_action(selected_actions, "建單"):
+            existing_order_rows.append((row_num, row))
+            continue
+
         if not should_create_order(row):
-            existing_order_rows.append((int(row["__sheet_row__"]), row))
+            existing_order_rows.append((row_num, row))
             continue
 
         key = build_group_key(row)
-        grouped_orders[key].append((int(row["__sheet_row__"]), row))
+        grouped_orders[key].append((row_num, row))
 
     all_row_results = {}
 
     for row_num, row in existing_order_rows:
         try:
-            result = process_existing_order_only(row, gcal_service, region, session)
+            result = process_existing_order_only(
+                row=row,
+                gcal_service=gcal_service,
+                region=region,
+                session=session,
+                selected_actions=selected_actions,
+            )
             all_row_results[row_num] = result
         except Exception as e:
             all_row_results[row_num] = {
@@ -1598,12 +1610,13 @@ def run_process_web(
         try:
             token = get_csrf_token(session)
             row_results = process_one_group(
-                session,
-                rows_with_idx,
-                token,
-                gcal_service,
-                region,
-                backend_user_id,   # ← ⭐一定要加
+                session=session,
+                rows_with_idx=rows_with_idx,
+                token=token,
+                gcal_service=gcal_service,
+                region=region,
+                backend_user_id=None,
+                selected_actions=selected_actions,
             )
             all_row_results.update(row_results)
         except Exception as e:
