@@ -290,6 +290,45 @@ def should_create_order(row):
 
 
 # =========================
+# 統一回填模板
+# =========================
+def build_row_result(
+    order_no="",
+    result="失敗",
+    reason="",
+    no_slot_date="",
+    insufficient_date="",
+    sms_time="",
+    customer_note="",
+    confirm_mail="",
+    calendar_result="",
+    calendar_reason="",
+    calendar_old="",
+    calendar_new="",
+    staff="無人力",
+    service_status="未處理",
+    fare="0",
+):
+    return {
+        "訂單編號": order_no,
+        "結果": result,
+        "原因": reason,
+        "沒班表日期": no_slot_date,
+        "餘額不足未送": insufficient_date,
+        "簡訊實際服務時間": sms_time,
+        "客人備註": customer_note,
+        "確認信": confirm_mail,
+        "日曆改色結果": calendar_result,
+        "日曆改色原因": calendar_reason,
+        "日曆原色": calendar_old,
+        "日曆新色": calendar_new,
+        "服務人員": staff if str(staff).strip() else "無人力",
+        "服務狀態": service_status if str(service_status).strip() else "未處理",
+        "車馬費": str(fare).strip() if str(fare).strip() else "0",
+    }
+
+
+# =========================
 # Google Sheet
 # =========================
 def build_gsheet_client():
@@ -570,13 +609,16 @@ def get_section_raw(session, order_data, token, date_slot):
 
 
 def slot_exists_in_section_response(raw_text, date_slot):
+    """
+    嚴格判斷：必須完整命中 YYYY-MM-DD_HH:MM-HH:MM
+    不允許模糊匹配到其他日期或其他時段
+    """
     if not raw_text:
         return False
 
-    date_part, period_part = date_slot.split("_", 1)
-    normalized = re.sub(r"\s+", "", raw_text)
-    pattern = re.escape(date_part) + r".*?" + re.escape(period_part)
-    return re.search(pattern, normalized) is not None
+    normalized = re.sub(r"\s+", "", str(raw_text))
+    target = re.sub(r"\s+", "", str(date_slot))
+    return target in normalized
 
 
 def validate_available_slots(session, order_data, token, date_slots):
@@ -622,7 +664,8 @@ def match_order_from_purchase_page(html, target_date, target_period):
     blocks = extract_order_cards_from_purchase_html(html)
     for block in blocks:
         joined = "\n".join(block["lines"])
-        if target_date in joined and target_period in joined:
+        normalized = re.sub(r"\s+", "", joined)
+        if target_date in normalized and target_period in normalized:
             return block["order_no"]
     return None
 
@@ -680,7 +723,6 @@ def _extract_service_date_time(lines):
         text = line.strip()
         if re.match(r"\d{4}-\d{2}-\d{2}", text):
             service_date = text[:10]
-
             if idx + 1 < len(lines):
                 nxt = lines[idx + 1].strip()
                 if re.match(r"\d{2}:\d{2}\s*-\s*\d{2}:\d{2}", nxt):
@@ -694,9 +736,9 @@ def fetch_order_meta_by_order_no(session, order_no):
     resp = session.get(PURCHASE_URL, headers=HEADERS, allow_redirects=True)
     if resp.status_code != 200:
         return {
-            "服務人員": "",
-            "服務狀態": "",
-            "車馬費": "",
+            "服務人員": "無人力",
+            "服務狀態": "未處理",
+            "車馬費": "0",
             "服務日期": "",
             "服務時間": "",
         }
@@ -706,18 +748,23 @@ def fetch_order_meta_by_order_no(session, order_no):
         if block["order_no"] == order_no:
             lines = block.get("lines", [])
             service_date, service_time = _extract_service_date_time(lines)
+
+            staff = _extract_staff_line(lines)
+            status = _extract_status_line(lines)
+            fare = _extract_fare_line(lines)
+
             return {
-                "服務人員": _extract_staff_line(lines),
-                "服務狀態": _extract_status_line(lines),
-                "車馬費": _extract_fare_line(lines),
+                "服務人員": staff if staff else "無人力",
+                "服務狀態": status if status else "未處理",
+                "車馬費": fare if fare else "0",
                 "服務日期": service_date,
                 "服務時間": service_time,
             }
 
     return {
-        "服務人員": "",
-        "服務狀態": "",
-        "車馬費": "",
+        "服務人員": "無人力",
+        "服務狀態": "未處理",
+        "車馬費": "0",
         "服務日期": "",
         "服務時間": "",
     }
@@ -1050,33 +1097,51 @@ def has_action(selected_actions, action_name):
     return action_name in selected_actions
 
 
+def validate_created_order(meta, expected_date, expected_period):
+    actual_date = str(meta.get("服務日期", "")).strip()
+    actual_period = str(meta.get("服務時間", "")).strip().replace(" ", "")
+    actual_staff = str(meta.get("服務人員", "")).strip()
+    actual_status = str(meta.get("服務狀態", "")).strip()
+
+    expected_period = expected_period.replace(" ", "")
+
+    if actual_date != expected_date:
+        return False, f"服務日期不符：預期 {expected_date}，實際 {actual_date or '空白'}"
+
+    if actual_period != expected_period:
+        return False, f"服務時段不符：預期 {expected_period}，實際 {actual_period or '空白'}"
+
+    if not actual_staff or actual_staff == "無人力":
+        return False, "未安排到服務人員"
+
+    if actual_status != "已處理":
+        return False, f"服務狀態異常：{actual_status or '空白'}"
+
+    return True, ""
+
+
 def process_existing_order_only(row, gcal_service, region, session, selected_actions=None):
     order_no = str(row.get("訂單編號", "")).strip()
 
-    result = {
-        "結果": "跳過",
-        "原因": "",
-        "沒班表日期": "",
-        "餘額不足未送": "",
-        "確認信": "",
-        "日曆改色結果": "",
-        "日曆改色原因": "",
-        "日曆原色": "",
-        "日曆新色": "",
-        "服務人員": "",
-        "服務狀態": "",
-        "車馬費": "",
-    }
-
     if not order_no:
-        result["結果"] = "失敗"
-        result["原因"] = "無訂單編號"
-        return result
+        return build_row_result(
+            result="失敗",
+            reason="無訂單編號",
+            staff="無人力",
+            service_status="未處理",
+            fare="0",
+        )
 
     meta = fetch_order_meta_by_order_no(session, order_no)
-    result["服務人員"] = meta.get("服務人員", "")
-    result["服務狀態"] = meta.get("服務狀態", "")
-    result["車馬費"] = meta.get("車馬費", "")
+
+    result = build_row_result(
+        order_no=order_no,
+        result="跳過",
+        reason="",
+        staff=meta.get("服務人員", "無人力"),
+        service_status=meta.get("服務狀態", "未處理"),
+        fare=meta.get("車馬費", "0"),
+    )
 
     did_anything = False
 
@@ -1094,36 +1159,6 @@ def process_existing_order_only(row, gcal_service, region, session, selected_act
         result["結果"] = "成功"
 
     return result
-
-
-def validate_created_order(meta, expected_date, expected_period):
-    """
-    嚴格驗證：
-    1. 服務日期需等於原預約日期
-    2. 服務時間需等於原預約時段
-    3. 服務人員不可空
-    4. 服務狀態需為已處理
-    """
-    actual_date = str(meta.get("服務日期", "")).strip()
-    actual_period = str(meta.get("服務時間", "")).strip().replace(" ", "")
-    actual_staff = str(meta.get("服務人員", "")).strip()
-    actual_status = str(meta.get("服務狀態", "")).strip()
-
-    expected_period = expected_period.replace(" ", "")
-
-    if actual_date != expected_date:
-        return False, f"服務日期不符：預期 {expected_date}，實際 {actual_date or '空白'}"
-
-    if actual_period != expected_period:
-        return False, f"服務時段不符：預期 {expected_period}，實際 {actual_period or '空白'}"
-
-    if not actual_staff:
-        return False, "未安排到服務人員"
-
-    if actual_status != "已處理":
-        return False, f"服務狀態異常：{actual_status or '空白'}"
-
-    return True, ""
 
 
 def process_one_group(
@@ -1245,7 +1280,7 @@ def process_one_group(
     base_data["price_vvip"] = calc_fields["price_vvip"]
     base_data["fare"] = calc_fields["fare"]
 
-    # 6. 每筆要驗證的原始目標 slot
+    # 6. 每筆原始目標 slot
     row_details = []
     for row_num, row in rows_with_idx:
         date_s = get_date_str(row["日期"])
@@ -1266,31 +1301,24 @@ def process_one_group(
         for detail in row_details:
             existing_order_no = str(detail["row"].get("訂單編號", "")).strip()
             meta = fetch_order_meta_by_order_no(session, existing_order_no) if existing_order_no else {
-                "服務人員": "",
-                "服務狀態": "",
-                "車馬費": "",
+                "服務人員": "無人力",
+                "服務狀態": "未處理",
+                "車馬費": "0",
             }
 
-            row_results[detail["row_num"]] = {
-                "訂單編號": existing_order_no,
-                "結果": "成功" if existing_order_no else "失敗",
-                "原因": "" if existing_order_no else "無訂單編號",
-                "沒班表日期": "",
-                "餘額不足未送": "",
-                "簡訊實際服務時間": base_data.get("period", ""),
-                "客人備註": base_data.get("memo", ""),
-                "確認信": "",
-                "日曆改色結果": "",
-                "日曆改色原因": "",
-                "日曆原色": "",
-                "日曆新色": "",
-                "服務人員": meta.get("服務人員", ""),
-                "服務狀態": meta.get("服務狀態", ""),
-                "車馬費": meta.get("車馬費", ""),
-            }
+            row_results[detail["row_num"]] = build_row_result(
+                order_no=existing_order_no,
+                result="成功" if existing_order_no else "失敗",
+                reason="" if existing_order_no else "無訂單編號",
+                sms_time=base_data.get("period", ""),
+                customer_note=base_data.get("memo", ""),
+                staff=meta.get("服務人員", "無人力"),
+                service_status=meta.get("服務狀態", "未處理"),
+                fare=meta.get("車馬費", "0"),
+            )
         return row_results
 
-    # 7. get_section：若列表沒有原訂日期時段，不能送單
+    # 7. 查詢班表：若沒有原表單時段，不可送單
     valid_slots, invalid_slots = validate_available_slots(
         session=session,
         order_data=base_data,
@@ -1302,28 +1330,21 @@ def process_one_group(
     invalid_details = [d for d in row_details if d["slot"] in invalid_slots]
 
     for detail in invalid_details:
-        row_results[detail["row_num"]] = {
-            "訂單編號": "",
-            "結果": "失敗",
-            "原因": "列表沒有原訂日期時段，不可送單",
-            "沒班表日期": detail["date"],
-            "餘額不足未送": "",
-            "簡訊實際服務時間": base_data.get("period", ""),
-            "客人備註": base_data.get("memo", ""),
-            "確認信": "",
-            "日曆改色結果": "",
-            "日曆改色原因": "",
-            "日曆原色": "",
-            "日曆新色": "",
-            "服務人員": "",
-            "服務狀態": "",
-            "車馬費": str(base_data.get("fare", "")),
-        }
+        row_results[detail["row_num"]] = build_row_result(
+            result="失敗",
+            reason="查詢班表時沒有相應時段資料，依系統規範不可送出",
+            no_slot_date=detail["date"],
+            sms_time=base_data.get("period", ""),
+            customer_note=base_data.get("memo", ""),
+            staff="無人力",
+            service_status="未處理",
+            fare="0",
+        )
 
     if not valid_details:
         return row_results
 
-    # 8. 儲值金篩選：使用後端 price
+    # 8. 儲值金篩選
     single_price = int(float(base_data.get("price") or 0))
     send_slots = []
     total = 0
@@ -1336,23 +1357,16 @@ def process_one_group(
     no_balance_details = [d for d in valid_details if d["slot"] not in send_slots]
 
     for detail in no_balance_details:
-        row_results[detail["row_num"]] = {
-            "訂單編號": "",
-            "結果": "未送",
-            "原因": "餘額不足",
-            "沒班表日期": "",
-            "餘額不足未送": detail["date"],
-            "簡訊實際服務時間": base_data.get("period", ""),
-            "客人備註": base_data.get("memo", ""),
-            "確認信": "",
-            "日曆改色結果": "",
-            "日曆改色原因": "",
-            "日曆原色": "",
-            "日曆新色": "",
-            "服務人員": "",
-            "服務狀態": "",
-            "車馬費": str(base_data.get("fare", "")),
-        }
+        row_results[detail["row_num"]] = build_row_result(
+            result="未送",
+            reason="餘額不足",
+            insufficient_date=detail["date"],
+            sms_time=base_data.get("period", ""),
+            customer_note=base_data.get("memo", ""),
+            staff="無人力",
+            service_status="未處理",
+            fare=str(base_data.get("fare", "0")),
+        )
 
     if not send_details:
         return row_results
@@ -1396,23 +1410,15 @@ def process_one_group(
         )
 
         if not order_no:
-            row_results[detail["row_num"]] = {
-                "訂單編號": "",
-                "結果": "失敗",
-                "原因": "送單後抓不到訂單編號",
-                "沒班表日期": "",
-                "餘額不足未送": "",
-                "簡訊實際服務時間": base_data.get("period", ""),
-                "客人備註": base_data.get("memo", ""),
-                "確認信": "",
-                "日曆改色結果": "",
-                "日曆改色原因": "",
-                "日曆原色": "",
-                "日曆新色": "",
-                "服務人員": "",
-                "服務狀態": "",
-                "車馬費": str(base_data.get("fare", "")),
-            }
+            row_results[detail["row_num"]] = build_row_result(
+                result="失敗",
+                reason="送單後抓不到訂單編號",
+                sms_time=base_data.get("period", ""),
+                customer_note=base_data.get("memo", ""),
+                staff="無人力",
+                service_status="未處理",
+                fare=str(base_data.get("fare", "0")),
+            )
             continue
 
         meta = fetch_order_meta_by_order_no(session, order_no)
@@ -1422,23 +1428,16 @@ def process_one_group(
             expected_period=detail["display_period"].replace(" ", ""),
         )
 
-        stage_result = {
-            "訂單編號": order_no,
-            "結果": "成功" if ok else "失敗",
-            "原因": "" if ok else reason,
-            "沒班表日期": "",
-            "餘額不足未送": "",
-            "簡訊實際服務時間": base_data.get("period", ""),
-            "客人備註": base_data.get("memo", ""),
-            "確認信": "",
-            "日曆改色結果": "",
-            "日曆改色原因": "",
-            "日曆原色": "",
-            "日曆新色": "",
-            "服務人員": meta.get("服務人員", ""),
-            "服務狀態": meta.get("服務狀態", ""),
-            "車馬費": meta.get("車馬費", "") or str(base_data.get("fare", "")),
-        }
+        stage_result = build_row_result(
+            order_no=order_no,
+            result="成功" if ok else "失敗",
+            reason="" if ok else reason,
+            sms_time=base_data.get("period", ""),
+            customer_note=base_data.get("memo", ""),
+            staff=meta.get("服務人員", "無人力"),
+            service_status=meta.get("服務狀態", "未處理"),
+            fare=meta.get("車馬費", "0") or str(base_data.get("fare", "0")),
+        )
 
         if ok and has_action(selected_actions, "寄確認信"):
             stage_result.update(stage_send_confirmation(order_no, session))
@@ -1549,21 +1548,13 @@ def run_process(sheet_name, start_row, end_row, env_name_from_ui=None):
             except Exception as e:
                 print(f"❌ 整組失敗：{e}")
                 for row_num, _ in rows_with_idx:
-                    all_row_results[row_num] = {
-                        "訂單編號": "",
-                        "結果": "失敗",
-                        "原因": str(e),
-                        "沒班表日期": "",
-                        "餘額不足未送": "",
-                        "確認信": "",
-                        "日曆改色結果": "",
-                        "日曆改色原因": "",
-                        "日曆原色": "",
-                        "日曆新色": "",
-                        "服務人員": "",
-                        "服務狀態": "",
-                        "車馬費": "",
-                    }
+                    all_row_results[row_num] = build_row_result(
+                        result="失敗",
+                        reason=str(e),
+                        staff="無人力",
+                        service_status="未處理",
+                        fare="0",
+                    )
 
             time.sleep(REQUEST_DELAY)
 
@@ -1707,13 +1698,13 @@ def run_process_web(
             )
             all_row_results[row_num] = result
         except Exception as e:
-            all_row_results[row_num] = {
-                "結果": "失敗",
-                "原因": f"補處理失敗: {e}",
-                "服務人員": "",
-                "服務狀態": "",
-                "車馬費": "",
-            }
+            all_row_results[row_num] = build_row_result(
+                result="失敗",
+                reason=f"補處理失敗: {e}",
+                staff="無人力",
+                service_status="未處理",
+                fare="0",
+            )
 
     for group_no, (_, rows_with_idx) in enumerate(grouped_orders.items(), start=1):
         _, first_row = rows_with_idx[0]
@@ -1734,21 +1725,13 @@ def run_process_web(
         except Exception as e:
             logger(f"整組失敗：{e}")
             for row_num, _ in rows_with_idx:
-                all_row_results[row_num] = {
-                    "訂單編號": "",
-                    "結果": "失敗",
-                    "原因": str(e),
-                    "沒班表日期": "",
-                    "餘額不足未送": "",
-                    "確認信": "",
-                    "日曆改色結果": "",
-                    "日曆改色原因": "",
-                    "日曆原色": "",
-                    "日曆新色": "",
-                    "服務人員": "",
-                    "服務狀態": "",
-                    "車馬費": "",
-                }
+                all_row_results[row_num] = build_row_result(
+                    result="失敗",
+                    reason=str(e),
+                    staff="無人力",
+                    service_status="未處理",
+                    fare="0",
+                )
 
         time.sleep(REQUEST_DELAY)
 
