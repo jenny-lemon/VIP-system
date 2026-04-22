@@ -1072,8 +1072,12 @@ def process_one_group(
 
     target_address = str(row0["地址"]).strip().split(",")[0]
     best_addr = pick_best_address_info(member_payload, target_address)
+
     if not best_addr:
-        raise Exception("找不到對應地址資料")
+        raise Exception(f"下拉選單找不到對應地址：{target_address}")
+    
+    if not str(best_addr.get("addressId", "")).strip():
+        raise Exception(f"地址存在但缺少 addressId，無法以下拉選單方式選取：{target_address}")
 
     addr_check = check_contain(
         session=session,
