@@ -480,53 +480,30 @@ def get_member(session, phone, token, clean_type_id):
 
 
 def pick_best_address_info(member_payload, target_address):
+    """
+    強制只使用會員既有地址（等同後台下拉選單）
+    找不到完全匹配地址就回傳 None
+    """
     member = member_payload.get("member", {}) if isinstance(member_payload, dict) else {}
-    purchase = member_payload.get("purchase", {}) if isinstance(member_payload, dict) else {}
-    address_list = member_payload.get("address", []) if isinstance(member_payload, dict) else []
-    member_address_list = member.get("memberAddressList", []) if isinstance(member, dict) else {}
+    member_address_list = member.get("memberAddressList", []) if isinstance(member, dict) else []
+
+    target_norm = normalize_addr_for_match(target_address)
 
     for item in member_address_list:
-        if same_address(item.get("address"), target_address):
-            result = {
-                "addressId": item.get("id", ""),
+        item_addr = str(item.get("address", "")).strip()
+        if normalize_addr_for_match(item_addr) == target_norm:
+            return {
+                "addressId": str(item.get("id", "")).strip(),
                 "country_id": item.get("countryId", ""),
                 "area_id": item.get("areaId", ""),
-                "address": item.get("address", target_address),
+                "address": item_addr,
                 "lat": item.get("lat", ""),
                 "lng": item.get("lng", ""),
                 "company_id": item.get("companyId", 1),
-            }
-            if isinstance(item.get("purchase"), dict):
-                result["purchase"] = item["purchase"]
-            return result
-
-    for item in address_list:
-        if same_address(item.get("address"), target_address):
-            return {
-                "addressId": "",
-                "country_id": item.get("countryId", ""),
-                "area_id": item.get("areaId", ""),
-                "address": item.get("address", target_address),
-                "lat": "",
-                "lng": "",
-                "company_id": 1,
-                "purchase": purchase if isinstance(purchase, dict) else {},
+                "purchase": item.get("purchase", {}) if isinstance(item.get("purchase"), dict) else {},
             }
 
-    if isinstance(purchase, dict) and purchase:
-        return {
-            "addressId": "",
-            "country_id": purchase.get("country_id", ""),
-            "area_id": purchase.get("area_id", ""),
-            "address": purchase.get("address", target_address),
-            "lat": purchase.get("lat", ""),
-            "lng": purchase.get("lng", ""),
-            "company_id": purchase.get("company_id", 1),
-            "purchase": purchase,
-        }
-
-    return {}
-
+    return None
 
 def check_contain(session, member_id, address, lat, lng, token, clean_type_id):
     data = {
