@@ -28,7 +28,6 @@ from env import (
     ORDER_PREFIX_PROD,
 )
 
-
 # =========================
 # 環境
 # =========================
@@ -73,6 +72,15 @@ STANDARD_SLOTS = [
     "14:00-16:00",
     "14:00-17:00",
     "14:00-18:00",
+]
+
+KNOWN_SERVICE_STATUS = [
+    "已處理",
+    "未處理",
+    "處理中",
+    "已完成",
+    "已取消",
+    "待處理",
 ]
 
 
@@ -163,6 +171,10 @@ def is_morning_slot(slot_text):
 
 
 def map_to_system_slot(start_time_str, end_time_str):
+    """
+    若原時段不是系統標準時段，轉成同時數、同上午/下午的系統時段。
+    原始時段仍保留在簡訊實際服務時間 / 客人備註。
+    """
     original_slot = normalize_period_text(start_time_str, end_time_str)
     actual_hours = calc_hours_from_time(start_time_str, end_time_str)
     if actual_hours is None:
@@ -189,7 +201,9 @@ def map_to_system_slot(start_time_str, end_time_str):
             break
 
     if not matched_slot:
-        raise Exception(f"找不到可對應的系統時段：原始時段 {original_slot}，時數 {actual_hours}")
+        raise Exception(
+            f"找不到可對應的系統時段：原始時段 {original_slot}，時數 {actual_hours}"
+        )
 
     return {
         "original_slot": original_slot,
@@ -201,6 +215,13 @@ def map_to_system_slot(start_time_str, end_time_str):
 
 
 def parse_service_human_hour(cell_value, start_time_str=None, end_time_str=None):
+    """
+    規則：
+    - 空白：預設 2 人，時數用開始/結束時間算
+    - 2人4小時 -> people=2, hours=4
+    - 2人 -> people=2, hours=依時間算
+    - 4小時 -> people=2(預設), hours=4
+    """
     default_people = 2
 
     if pd.isna(cell_value) or str(cell_value).strip() == "":
@@ -342,6 +363,9 @@ def ensure_columns_in_sheet(ws):
         "日曆改色原因",
         "日曆原色",
         "日曆新色",
+        "服務人員",   # X
+        "服務狀態",   # Y
+        "車馬費",     # Z
     ]
 
     changed = False
@@ -546,7 +570,7 @@ def validate_available_slots(session, order_data, token, date_slots):
 
 
 # =========================
-# Purchase 頁抓訂單編號
+# Purchase 頁抓訂單編號 / 人員 / 狀態
 # =========================
 def extract_order_cards_from_purchase_html(html):
     soup = BeautifulSoup(html, "html.parser")
@@ -586,6 +610,68 @@ def fetch_order_no_by_date_and_period(session, target_date, target_period):
     if resp.status_code != 200:
         return None
     return match_order_from_purchase_page(resp.text, target_date, target_period)
+
+
+def _extract_staff_line(lines):
+    """
+    嘗試抓出像：
+    李佩蓉(3) X 木品鈞(2)
+    """
+    for line in lines:
+        if " X " in line and re.search(r"\([0-9]+\)", line):
+            return line.strip()
+
+    for line in lines:
+        if "X" in line and re.search(r"\([0-9]+\)", line):
+            return line.strip()
+
+    return ""
+
+
+def _extract_status_line(lines):
+    """
+    服務狀態欄常見結構：
+    服務狀態
+    已處理
+    """
+    for idx, line in enumerate(lines):
+        if line == "服務狀態":
+            if idx + 1 < len(lines):
+                return lines[idx + 1].strip()
+
+    for line in lines:
+        if line in KNOWN_SERVICE_STATUS:
+            return line.strip()
+
+    return ""
+
+
+def fetch_order_meta_by_order_no(session, order_no):
+    """
+    回訂單列表抓：
+    - 服務人員
+    - 服務狀態
+    """
+    resp = session.get(PURCHASE_URL, headers=HEADERS, allow_redirects=True)
+    if resp.status_code != 200:
+        return {
+            "服務人員": "",
+            "服務狀態": "",
+        }
+
+    blocks = extract_order_cards_from_purchase_html(resp.text)
+    for block in blocks:
+        if block["order_no"] == order_no:
+            lines = block.get("lines", [])
+            return {
+                "服務人員": _extract_staff_line(lines),
+                "服務狀態": _extract_status_line(lines),
+            }
+
+    return {
+        "服務人員": "",
+        "服務狀態": "",
+    }
 
 
 def send_confirmation_mail(session, order_no):
@@ -852,9 +938,9 @@ def prepare_base_order_data(
         "period_s": system_period,
         "period": note_info["sms_time"] if note_info["need_note"] else "",
         "cycle": "1",
-        "fare": "0",
+        "fare": str(address_info.get("fare") or pick("fare", "0")),
         "memo": base_memo,
-        "notice": "",
+        "notice": str(address_info.get("notice") or pick("notice", "")),
         "discount_code": "",
         "payway": "4",
         "is_backend": "477",
@@ -950,12 +1036,19 @@ def process_existing_order_only(row, gcal_service, region, session, selected_act
         "日曆改色原因": "",
         "日曆原色": "",
         "日曆新色": "",
+        "服務人員": "",
+        "服務狀態": "",
+        "車馬費": "",
     }
 
     if not order_no:
         result["結果"] = "失敗"
         result["原因"] = "無訂單編號"
         return result
+
+    meta = fetch_order_meta_by_order_no(session, order_no)
+    result["服務人員"] = meta.get("服務人員", "")
+    result["服務狀態"] = meta.get("服務狀態", "")
 
     did_anything = False
 
@@ -1051,6 +1144,10 @@ def process_one_group(
     if isinstance(addr_check.get("purchase"), dict):
         best_addr["purchase"] = addr_check["purchase"]
 
+    purchase_data = best_addr.get("purchase", {}) if isinstance(best_addr.get("purchase"), dict) else {}
+    best_addr["fare"] = purchase_data.get("fare", purchase_data.get("car_fare", 0))
+    best_addr["notice"] = purchase_data.get("notice", purchase_data.get("service_notice", ""))
+
     base_data = prepare_base_order_data(
         row=row0,
         member_payload=member_payload,
@@ -1069,6 +1166,8 @@ def process_one_group(
     calc_result = calculate_hour(session, calc_data, token)
     if not calc_result:
         raise Exception("計算時數失敗")
+
+    fare_value = str(base_data.get("fare", "")).strip()
 
     row_details = []
     for row_num, row in rows_with_idx:
@@ -1091,6 +1190,10 @@ def process_one_group(
     if not need_create_order:
         for detail in row_details:
             existing_order_no = str(detail["row"].get("訂單編號", "")).strip()
+            meta = fetch_order_meta_by_order_no(session, existing_order_no) if existing_order_no else {
+                "服務人員": "",
+                "服務狀態": "",
+            }
 
             stage_result = {
                 "訂單編號": existing_order_no,
@@ -1105,6 +1208,9 @@ def process_one_group(
                 "日曆改色原因": "",
                 "日曆原色": "",
                 "日曆新色": "",
+                "服務人員": meta.get("服務人員", ""),
+                "服務狀態": meta.get("服務狀態", ""),
+                "車馬費": fare_value,
             }
 
             if existing_order_no and has_action(selected_actions, "寄確認信"):
@@ -1149,6 +1255,9 @@ def process_one_group(
                 "日曆改色原因": "",
                 "日曆原色": "",
                 "日曆新色": "",
+                "服務人員": "",
+                "服務狀態": "",
+                "車馬費": fare_value,
             }
         return row_results
 
@@ -1183,6 +1292,9 @@ def process_one_group(
                 "日曆改色原因": "",
                 "日曆原色": "",
                 "日曆新色": "",
+                "服務人員": "",
+                "服務狀態": "",
+                "車馬費": fare_value,
             }
         elif detail["date"] in insufficient_dates:
             row_results[detail["row_num"]] = {
@@ -1198,6 +1310,9 @@ def process_one_group(
                 "日曆改色原因": "",
                 "日曆原色": "",
                 "日曆新色": "",
+                "服務人員": "",
+                "服務狀態": "",
+                "車馬費": fare_value,
             }
 
     if not send_details:
@@ -1211,7 +1326,6 @@ def process_one_group(
         payload = base_data.copy()
         payload["price"] = str(price)
         payload["price_vvip"] = "0"
-        payload["fare"] = "0"
 
         slots = [d["slot"] for d in details]
 
@@ -1245,8 +1359,13 @@ def process_one_group(
                     "日曆改色原因": "",
                     "日曆原色": "",
                     "日曆新色": "",
+                    "服務人員": "",
+                    "服務狀態": "",
+                    "車馬費": fare_value,
                 }
                 continue
+
+            meta = fetch_order_meta_by_order_no(session, order_no)
 
             stage_result = {
                 "訂單編號": order_no,
@@ -1261,6 +1380,9 @@ def process_one_group(
                 "日曆改色原因": "",
                 "日曆原色": "",
                 "日曆新色": "",
+                "服務人員": meta.get("服務人員", ""),
+                "服務狀態": meta.get("服務狀態", ""),
+                "車馬費": fare_value,
             }
 
             if has_action(selected_actions, "寄確認信"):
@@ -1387,6 +1509,9 @@ def run_process(sheet_name, start_row, end_row, env_name_from_ui=None):
                         "日曆改色原因": "",
                         "日曆原色": "",
                         "日曆新色": "",
+                        "服務人員": "",
+                        "服務狀態": "",
+                        "車馬費": "",
                     }
 
             time.sleep(REQUEST_DELAY)
@@ -1534,6 +1659,9 @@ def run_process_web(
             all_row_results[row_num] = {
                 "結果": "失敗",
                 "原因": f"補處理失敗: {e}",
+                "服務人員": "",
+                "服務狀態": "",
+                "車馬費": "",
             }
 
     for group_no, (_, rows_with_idx) in enumerate(grouped_orders.items(), start=1):
@@ -1566,6 +1694,9 @@ def run_process_web(
                     "日曆改色原因": "",
                     "日曆原色": "",
                     "日曆新色": "",
+                    "服務人員": "",
+                    "服務狀態": "",
+                    "車馬費": "",
                 }
 
         time.sleep(REQUEST_DELAY)
