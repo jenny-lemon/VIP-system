@@ -865,7 +865,7 @@ def prepare_base_order_data(
         "memoFinance": str(member.get("memo_finance") or ""),
         "addressId": str(address_info.get("addressId") or ""),
         "country_id": str(address_info.get("country_id") or pick("country_id", "12")),
-        "address": str(row["地址"]).strip(),
+        "address": str(address_info.get("address") or row["地址"]).strip(),
         "ping": str(pick("ping", "4")),
         "room": str(pick("room", "0")),
         "bathroom": str(pick("bathroom", "0")),
