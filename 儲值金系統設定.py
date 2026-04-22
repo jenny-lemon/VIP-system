@@ -1091,10 +1091,16 @@ def process_one_group(
         clean_type_id=clean_type_id,
     )
 
-    if addr_check and isinstance(addr_check.get("area"), dict):
-        best_addr["area_id"] = addr_check["area"].get("area_id", best_addr.get("area_id"))
-        best_addr["company_id"] = addr_check["area"].get("company_id", best_addr.get("company_id"))
-    if addr_check and isinstance(addr_check.get("purchase"), dict):
+    if not addr_check:
+        raise Exception(f"查詢地區失敗：{selected_address}")
+
+    if not isinstance(addr_check.get("area"), dict):
+        raise Exception(f"查詢地區無回傳 area：{selected_address}")
+
+    best_addr["area_id"] = addr_check["area"].get("area_id", best_addr.get("area_id"))
+    best_addr["company_id"] = addr_check["area"].get("company_id", best_addr.get("company_id"))
+
+    if isinstance(addr_check.get("purchase"), dict):
         best_addr["purchase"] = addr_check["purchase"]
 
     base_data = prepare_base_order_data(
