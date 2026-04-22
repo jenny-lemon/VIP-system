@@ -1079,10 +1079,12 @@ def process_one_group(
     if not str(best_addr.get("addressId", "")).strip():
         raise Exception(f"地址存在但缺少 addressId，無法以下拉選單方式選取：{target_address}")
 
+    selected_address = str(best_addr.get("address", "")).strip()
+
     addr_check = check_contain(
         session=session,
         member_id=member.get("member_id", ""),
-        address=target_address,
+        address=selected_address,
         lat=best_addr.get("lat", ""),
         lng=best_addr.get("lng", ""),
         token=token,
