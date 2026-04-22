@@ -1,7 +1,6 @@
 import re
 import time
-import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
 import requests
@@ -28,6 +27,7 @@ from env import (
     ORDER_PREFIX_DEV,
     ORDER_PREFIX_PROD,
 )
+
 
 # =========================
 # 環境
@@ -66,14 +66,13 @@ CLEAN_TYPE_MAP = {
 
 ORDER_NO_REGEX = r"(LC|TT)\d+"
 
-# 系統可成立的標準時段
 STANDARD_SLOTS = [
-    "08:30-12:30",  # 上午 4 小時
-    "09:00-11:00",  # 上午 2 小時
-    "09:00-12:00",  # 上午 3 小時
-    "14:00-16:00",  # 下午 2 小時
-    "14:00-17:00",  # 下午 3 小時
-    "14:00-18:00",  # 下午 4 小時
+    "08:30-12:30",
+    "09:00-11:00",
+    "09:00-12:00",
+    "14:00-16:00",
+    "14:00-17:00",
+    "14:00-18:00",
 ]
 
 
@@ -164,17 +163,6 @@ def is_morning_slot(slot_text):
 
 
 def map_to_system_slot(start_time_str, end_time_str):
-    """
-    規則：
-    1. 若原時段本身就是系統標準時段，直接使用
-    2. 若不是標準時段：
-       - 上午 -> 從上午標準時段中找時數相同的
-       - 下午 -> 從下午標準時段中找時數相同的
-    3. 找到後：
-       - 系統成立時段 = mapped_slot
-       - 簡訊實際服務時間 = Excel 原始時段
-       - 客人備註 = 服務時間：Excel 原始時段
-    """
     original_slot = normalize_period_text(start_time_str, end_time_str)
     actual_hours = calc_hours_from_time(start_time_str, end_time_str)
     if actual_hours is None:
@@ -201,9 +189,7 @@ def map_to_system_slot(start_time_str, end_time_str):
             break
 
     if not matched_slot:
-        raise Exception(
-            f"找不到可對應的系統時段：原始時段 {original_slot}，時數 {actual_hours}"
-        )
+        raise Exception(f"找不到可對應的系統時段：原始時段 {original_slot}，時數 {actual_hours}")
 
     return {
         "original_slot": original_slot,
@@ -215,13 +201,6 @@ def map_to_system_slot(start_time_str, end_time_str):
 
 
 def parse_service_human_hour(cell_value, start_time_str=None, end_time_str=None):
-    """
-    規則：
-    - 空白：預設 2 人，時數用開始/結束時間算
-    - 2人4小時 -> people=2, hours=4
-    - 2人 -> people=2, hours=依時間算
-    - 4小時 -> people=2(預設), hours=4
-    """
     default_people = 2
 
     if pd.isna(cell_value) or str(cell_value).strip() == "":
@@ -302,6 +281,7 @@ def get_region_by_address(address, accounts_config):
                 return region
     return None
 
+
 def should_process_row(row):
     status = str(row.get("狀態", "")).strip()
     order_no = row.get("訂單編號", "")
@@ -317,16 +297,6 @@ def should_create_order(row):
 # =========================
 # Google Sheet
 # =========================
-import streamlit as st
-
-def build_gsheet_client():
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-
-    import streamlit as st
-
 def build_gsheet_client():
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -337,9 +307,8 @@ def build_gsheet_client():
         GOOGLE_SERVICE_ACCOUNT_FILE,
         scopes=scopes,
     )
+    return gspread.authorize(creds)
 
-    return gspread.authorize(creds)
-    return gspread.authorize(creds)
 
 def load_worksheet(sheet_name):
     client = build_gsheet_client()
@@ -504,7 +473,8 @@ def pick_best_address_info(member_payload, target_address):
             }
 
     return None
-    
+
+
 def check_contain(session, member_id, address, lat, lng, token, clean_type_id):
     data = {
         "memberId": member_id,
@@ -640,18 +610,12 @@ def build_gcal_service():
         return None
 
     scopes = ["https://www.googleapis.com/auth/calendar"]
-def build_gcal_service():
-    if not ENABLE_GCAL_COLOR_SYNC:
-        return None
-
-    scopes = ["https://www.googleapis.com/auth/calendar"]
 
     credentials = Credentials.from_service_account_file(
         GOOGLE_SERVICE_ACCOUNT_FILE,
         scopes=scopes,
     )
 
-    return build("calendar", "v3", credentials=credentials)
     return build("calendar", "v3", credentials=credentials)
 
 
@@ -683,7 +647,6 @@ def color_name_from_id(color_id):
     }
     return mapping.get(str(color_id), f"未知({color_id})")
 
-from datetime import timezone
 
 def find_matching_calendar_event(service, calendar_id, address, target_date, start_time_str, end_time_str):
     target_date_obj = parse_date_value(target_date)
@@ -736,6 +699,7 @@ def find_matching_calendar_event(service, calendar_id, address, target_date, sta
 
     return None
 
+
 def sync_calendar_color_for_row(service, calendar_id, address, date_value, start_time_str, end_time_str):
     if not ENABLE_GCAL_COLOR_SYNC or service is None:
         return {
@@ -781,7 +745,6 @@ def sync_calendar_color_for_row(service, calendar_id, address, date_value, start
     old_color = str(event.get("colorId", ""))
     old_color_name = color_name_from_id(old_color)
 
-    # 若原本不是葡萄紫 -> 不動，表示需求有異動
     if old_color != COLOR_PURPLE:
         return {
             "日曆改色結果": "未改",
@@ -843,9 +806,7 @@ def prepare_base_order_data(
             return last_purchase.get(key)
         return default
 
-    # 👉 完全忽略 B欄備註
     base_memo = ""
-  
     if note_info["need_note"]:
         if base_memo:
             base_memo = f"{base_memo}；{note_info['customer_time_note']}"
@@ -888,12 +849,12 @@ def prepare_base_order_data(
         "price_vvip": "0",
         "person": str(int(people)),
         "date_s": "",
-        "period_s": system_period,   # 系統成立時段
-        "period": note_info["sms_time"] if note_info["need_note"] else "",  # 簡訊實際服務時間
+        "period_s": system_period,
+        "period": note_info["sms_time"] if note_info["need_note"] else "",
         "cycle": "1",
         "fare": "0",
-        "memo": base_memo,          # 客人備註
-        "notice": "",               # 客服備註先留空
+        "memo": base_memo,
+        "notice": "",
         "discount_code": "",
         "payway": "4",
         "is_backend": "477",
@@ -905,6 +866,7 @@ def prepare_base_order_data(
     }
 
     return data
+
 
 def filter_dates_by_balance(date_slots, date_prices, stored_value):
     selected_slots = []
@@ -921,9 +883,7 @@ def filter_dates_by_balance(date_slots, date_prices, stored_value):
 
 
 def stage_send_confirmation(order_no, session):
-    result = {
-        "確認信": "",
-    }
+    result = {"確認信": ""}
 
     if not order_no:
         return result
@@ -970,6 +930,7 @@ def stage_update_status(order_no, calendar_info):
         return {"狀態": "已安排"}
     return {}
 
+
 def has_action(selected_actions, action_name):
     if not selected_actions:
         return True
@@ -977,11 +938,6 @@ def has_action(selected_actions, action_name):
 
 
 def process_existing_order_only(row, gcal_service, region, session, selected_actions=None):
-    """
-    已有訂單編號：
-    - 不重建訂單
-    - 可依 selected_actions 補發確認信 / 補改日曆顏色
-    """
     order_no = str(row.get("訂單編號", "")).strip()
 
     result = {
@@ -1031,13 +987,6 @@ def process_one_group(
     backend_user_id=None,
     selected_actions=None,
 ):
-    """
-    無訂單編號：
-    1. 可成立訂單
-    2. 可發送確認信
-    3. 可日曆改色
-    4. 可狀態改為已安排
-    """
     row_num0, row0 = rows_with_idx[0]
 
     purchase_item = str(row0["購買項目"]).strip()
@@ -1045,7 +994,6 @@ def process_one_group(
     if not clean_type_id:
         raise Exception(f"未知購買項目: {purchase_item}")
 
-    original_period = normalize_period_text(row0["開始時間"], row0["結束時間"])
     mapped = map_to_system_slot(row0["開始時間"], row0["結束時間"])
     system_period = mapped["system_slot"]
 
@@ -1103,7 +1051,7 @@ def process_one_group(
     if isinstance(addr_check.get("purchase"), dict):
         best_addr["purchase"] = addr_check["purchase"]
 
-base_data = prepare_base_order_data(
+    base_data = prepare_base_order_data(
         row=row0,
         member_payload=member_payload,
         address_info=best_addr,
@@ -1137,9 +1085,7 @@ base_data = prepare_base_order_data(
             "row": row,
         })
 
-    # 若有建單，才需要驗班表與儲值金
     need_create_order = has_action(selected_actions, "建單")
-
     row_results = {}
 
     if not need_create_order:
@@ -1176,8 +1122,6 @@ base_data = prepare_base_order_data(
             row_results[detail["row_num"]] = stage_result
 
         return row_results
-
-    # ===== 以下是需要建單時才執行 =====
 
     raw_slots = [x["slot"] for x in row_details]
     valid_slots, invalid_slots = validate_available_slots(session, base_data, token, raw_slots)
