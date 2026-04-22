@@ -504,7 +504,7 @@ def pick_best_address_info(member_payload, target_address):
             }
 
     return None
-
+    
 def check_contain(session, member_id, address, lat, lng, token, clean_type_id):
     data = {
         "memberId": member_id,
