@@ -1075,7 +1075,7 @@ def process_one_group(
 
     if not best_addr:
         raise Exception(f"下拉選單找不到對應地址：{target_address}")
-    
+
     if not str(best_addr.get("addressId", "")).strip():
         raise Exception(f"地址存在但缺少 addressId，無法以下拉選單方式選取：{target_address}")
 
@@ -1103,7 +1103,7 @@ def process_one_group(
     if isinstance(addr_check.get("purchase"), dict):
         best_addr["purchase"] = addr_check["purchase"]
 
-    base_data = prepare_base_order_data(
+base_data = prepare_base_order_data(
         row=row0,
         member_payload=member_payload,
         address_info=best_addr,
