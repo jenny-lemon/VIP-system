@@ -313,6 +313,15 @@ def build_row_result(
     service_status="未處理",
     fare="0",
 ):
+    xyz = finalize_xyz(
+        {
+            "服務人員": staff,
+            "服務狀態": service_status,
+            "車馬費": fare,
+        },
+        fallback_fare="0",
+    )
+
     return {
         "訂單編號": order_no,
         "結果": result,
@@ -326,11 +335,10 @@ def build_row_result(
         "日曆改色原因": calendar_reason,
         "日曆原色": calendar_old,
         "日曆新色": calendar_new,
-        "服務人員": staff if str(staff).strip() else "無人力",
-        "服務狀態": service_status if str(service_status).strip() else "未處理",
-        "車馬費": str(fare).strip() if str(fare).strip() else "0",
+        "服務人員": xyz["服務人員"],
+        "服務狀態": xyz["服務狀態"],
+        "車馬費": xyz["車馬費"],
     }
-
 
 # =========================
 # Google Sheet
@@ -403,6 +411,21 @@ def update_sheet_rows(ws, row_results):
 
     updates = []
     for row_num, info in row_results.items():
+        # 強制補 XYZ
+        xyz = finalize_xyz(
+            {
+                "服務人員": info.get("服務人員", ""),
+                "服務狀態": info.get("服務狀態", ""),
+                "車馬費": info.get("車馬費", ""),
+            },
+            fallback_fare="0",
+        )
+        info["服務人員"] = xyz["服務人員"]
+        info["服務狀態"] = xyz["服務狀態"]
+        info["車馬費"] = xyz["車馬費"]
+
+        print(f"[DEBUG] row={row_num} XYZ={xyz}")
+
         for key, value in info.items():
             if key not in header_index:
                 continue
@@ -1397,7 +1420,19 @@ def process_one_group(
         payload = base_data.copy()
         payload["price"] = str(price)
         payload["price_vvip"] = "0"
-        payload["fare"] = str(base_data.get("fare", "0"))
+        payload["fare"] = str(base_data.get("fare") or best_addr.get("fare") or "0")
+        payload["notice"] = str(base_data.get("notice") or best_addr.get("notice") or "")
+        payload["area_id"] = str(base_data.get("area_id") or best_addr.get("area_id") or "")
+        payload["company_id"] = str(base_data.get("company_id") or best_addr.get("company_id") or "")
+        payload["addressId"] = str(base_data.get("addressId") or best_addr.get("addressId") or "")
+
+        print("[DEBUG] final address payload", {
+            "addressId": payload.get("addressId"),
+            "notice": payload.get("notice"),
+            "fare": payload.get("fare"),
+            "area_id": payload.get("area_id"),
+            "company_id": payload.get("company_id"),
+        })
 
         slots = [d["slot"] for d in details]
 
@@ -1764,3 +1799,24 @@ def run_process_web(
         "fail_count": fail_count,
         "total_processed": len(all_row_results),
     }
+
+def finalize_xyz(meta=None, fallback_fare="0"):
+    meta = meta or {}
+
+    staff = str(meta.get("服務人員", "") or "").strip()
+    status = str(meta.get("服務狀態", "") or "").strip()
+    fare = str(meta.get("車馬費", "") or "").strip()
+
+    if not staff:
+        staff = "無人力"
+    if not status:
+        status = "未處理"
+    if not fare:
+        fare = str(fallback_fare or "0").strip() or "0"
+
+    return {
+        "服務人員": staff,
+        "服務狀態": status,
+        "車馬費": fare,
+    }
+
